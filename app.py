@@ -430,59 +430,6 @@ class AttributionEngine:
             }
         )
 
-# --- 4. Archive Pipeline (Orchestration for Ingestion) ---
-
-class ArchivePipeline:
-    """Orchestrates the complete RAG pipeline, focused on Ingestion for setup."""
-
-    def __init__(self, config: dict):
-        self.config = config
-        self.embedding_service = EmbeddingService(model_name=self.config.get('embedding_model', 'BAAI/bge-large-en-v1.5'))
-        self.audio_processor = AudioProcessor(model_size=self.config.get('whisper_model', 'base'))
-        self.pdf_processor = PDFProcessor()
-        self.vector_store = PineconeVectorStore(
-            api_key=self.config['pinecone_api_key'],
-            index_name=self.config.get('index_name', 'assess'),
-            dimension=self.embedding_service.dimension
-        )
-
-    def ingest_documents(self, audio_path: str = None, pdf_path: str = None):
-        """Ingest documents into the vector store."""
-        logger.info("STARTING DOCUMENT INGESTION")
-        all_chunks = []
-
-        # Process audio (Audio Ingestion Pipeline - Part 1, Req 1)
-        if audio_path and os.path.exists(audio_path):
-            try:
-                segments = self.audio_processor.transcribe_with_timestamps(audio_path)
-                filename = Path(audio_path).name
-                audio_chunks = [
-                    DocumentChunk(
-                        id=generate_chunk_id(seg['text'], filename, i),
-                        text=seg['text'],
-                        source=filename,
-                        type='audio',
-                        metadata={'timestamp': seg['timestamp'], 'start_time': seg['start_time'], 'end_time': seg['end_time']}
-                    ) for i, seg in enumerate(segments)
-                ]
-                all_chunks.extend(audio_chunks)
-                logger.info(f"Audio processed: {len(audio_chunks)} chunks created")
-            except Exception as e:
-                logger.error(f"Audio processing failed: {e}. Degrading gracefully.") # Graceful Degradation (Part 3)
-
-        # Process PDF
-        if pdf_path and os.path.exists(pdf_path):
-            try:
-                pdf_chunks_raw = self.pdf_processor.extract_text_with_pages(
-                    pdf_path, chunk_size=self.config.get('chunk_size', 500)
-                )
-                filename = Path(pdf_path).name
-                pdf_chunks = [
-                    DocumentChunk(
-                        id=generate_chunk_id(data['text'], filename, i),
-
-
-
 
 
 
@@ -570,7 +517,6 @@ class ArchivePipeline:
 
 
 # --- 5. Flask Backend (Render Deployment) ---
-#-- 5. Flask Backend (Render Deployment) ---
 
 # Get config from environment
 CONFIG = {
