@@ -416,3 +416,438 @@ if __name__ == "__main__":
         print(f"\nCitations ({len(result.citations)}):")
         for citation in result.citations:
             print(f"  - {citation}")
+
+
+
+
+
+#main pipeline 
+
+
+"""
+Berlin Media Archive - Complete Pipeline Runner
+Orchestrates the entire ingestion and query process
+"""
+
+import os
+import sys
+import json
+import argparse # Keep for standalone script execution if needed, but bypass for Colab
+from pathlib import Path
+from dotenv import load_dotenv
+import logging
+
+# Assuming these classes/functions are defined in other executed cells
+# They are now globally available after previous cell executions
+# from rag_main_pipeline import (
+#     EmbeddingService,
+#     AudioProcessor,
+#     PDFProcessor,
+#     PineconeVectorStore,
+#     DocumentChunk,
+#     generate_chunk_id
+# )
+# from rag_query_engine import AttributionEngine, query_with_observability
+
+# Load environment variables
+load_dotenv()
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+
+class ArchivePipeline:
+    """Orchestrates the complete RAG pipeline"""
+
+    def __init__(self, config: dict):
+        self.config = config
+        self.embedding_service = None
+        self.audio_processor = None
+        self.pdf_processor = None
+        self.vector_store = None
+        self.query_engine = None
+        self.actual_dimension = None
+
+    def initialize_services(self):
+        """Initialize all required services"""
+        logger.info("Initializing pipeline services...")
+
+        try:
+            # Initialize processors
+            embedding_model = self.config.get('embedding_model', 'BAAI/bge-large-en-v1.5') # Use 1024-dim model
+            self.embedding_service = EmbeddingService(model_name=embedding_model)
+
+            # Get actual dimension from embedding model
+            self.actual_dimension = self.embedding_service.dimension
+            logger.info(f"Embedding dimension: {self.actual_dimension}")
+
+            self.audio_processor = AudioProcessor(
+                model_size=self.config.get('whisper_model', 'base')
+            )
+
+            self.pdf_processor = PDFProcessor()
+
+            # Initialize vector store with actual dimension
+            self.vector_store = PineconeVectorStore(
+                api_key=self.config['pinecone_api_key'],
+                index_name=self.config.get('index_name', 'assess'),
+                dimension=self.actual_dimension  # Use actual dimension from model
+            )
+
+            # Initialize query engine with same embedding model
+            self.query_engine = AttributionEngine(
+                pinecone_api_key=self.config['pinecone_api_key'],
+                gemini_api_key=self.config['gemini_api_key'],
+                index_name=self.config.get('index_name', 'assess'),
+                embedding_model=embedding_model # Pass the embedding model name here
+            )
+
+            logger.info("All services initialized successfully")
+
+        except Exception as e:
+            logger.error(f"Service initialization failed: {e}")
+            raise
+
+    def ingest_documents(self, audio_path: str = None, pdf_path: str = None):
+        """
+        Ingest documents into the vector store
+
+        Args:
+            audio_path: Path to audio file
+            pdf_path: Path to PDF file
+        """
+        logger.info("="*70)
+        logger.info("STARTING DOCUMENT INGESTION")
+        logger.info("="*70)
+
+        all_chunks = []
+
+        # Process audio if provided
+        if audio_path and os.path.exists(audio_path):
+            logger.info(f"\nProcessing audio: {audio_path}")
+            try:
+                audio_chunks = self._process_audio(audio_path)
+                all_chunks.extend(audio_chunks)
+                logger.info(f"✓ Audio processed: {len(audio_chunks)} chunks created")
+            except Exception as e:
+                logger.error(f"✗ Audio processing failed: {e}")
+                # Continue with other documents
+        elif audio_path:
+            logger.warning(f"Audio file not found: {audio_path}")
+
+        # Process PDF if provided
+        if pdf_path and os.path.exists(pdf_path):
+            logger.info(f"\nProcessing PDF: {pdf_path}")
+            try:
+                pdf_chunks = self._process_pdf(pdf_path)
+                all_chunks.extend(pdf_chunks)
+                logger.info(f"✓ PDF processed: {len(pdf_chunks)} chunks created")
+            except Exception as e:
+                logger.error(f"✗ PDF processing failed: {e}")
+                # Continue with other documents
+        elif pdf_path:
+            logger.warning(f"PDF file not found: {pdf_path}")
+
+        if not all_chunks:
+            logger.error("No documents were successfully processed!")
+            return False
+
+        # Generate embeddings
+        logger.info(f"\nGenerating embeddings for {len(all_chunks)} chunks...")
+        try:
+            all_texts = [chunk.text for chunk in all_chunks]
+            embeddings = self.embedding_service.embed_batch(all_texts)
+
+            for chunk, embedding in zip(all_chunks, embeddings):
+                chunk.embedding = embedding
+
+            logger.info("✓ Embeddings generated")
+        except Exception as e:
+            logger.error(f"✗ Embedding generation failed: {e}")
+            return False
+
+        # Upload to Pinecone
+        logger.info(f"\nUploading to Pinecone index '{self.config.get('index_name', 'assess')}'...")
+        try:
+            self.vector_store.upsert_chunks(all_chunks)
+            logger.info("✓ Upload complete")
+
+            # Show stats
+            stats = self.vector_store.get_stats()
+            logger.info(f"\nVector Store Statistics:")
+            logger.info(f"  Total vectors: {stats.get('total_vector_count', 0)}")
+            logger.info(f"  Dimension: {stats.get('dimension', 0)}")
+
+        except Exception as e:
+            logger.error(f"✗ Upload failed: {e}")
+            return False
+
+        logger.info("\n" + "="*70)
+        logger.info("INGESTION COMPLETE")
+        logger.info("="*70)
+
+        return True
+
+    def _process_audio(self, audio_path: str) -> list:
+        """Process audio file into chunks"""
+        segments = self.audio_processor.transcribe_with_timestamps(audio_path)
+        chunks = []
+
+        filename = Path(audio_path).name
+
+        for i, segment in enumerate(segments):
+            chunk = DocumentChunk(
+                id=generate_chunk_id(segment['text'], filename, i),
+                text=segment['text'],
+                source=filename,
+                type='audio',
+                metadata={
+                    'timestamp': segment['timestamp'],
+                    'start_time': float(segment['start_time']),
+                    'end_time': float(segment['end_time'])
+                }
+            )
+            chunks.append(chunk)
+
+        return chunks
+
+    def _process_pdf(self, pdf_path: str) -> list:
+        """Process PDF file into chunks"""
+        pdf_chunks_raw = self.pdf_processor.extract_text_with_pages(
+            pdf_path,
+            chunk_size=self.config.get('chunk_size', 500)
+        )
+        chunks = []
+
+        filename = Path(pdf_path).name
+
+        for i, chunk_data in enumerate(pdf_chunks_raw):
+            chunk = DocumentChunk(
+                id=generate_chunk_id(chunk_data['text'], filename, i),
+                text=chunk_data['text'],
+                source=filename,
+                type='text',
+                metadata={
+                    'page': chunk_data['page'],
+                    'chunk_index': chunk_data['chunk_index']
+                }
+            )
+            chunks.append(chunk)
+
+        return chunks
+
+    def query(self, question: str, top_k: int = 5, output_file: str = None):
+        """
+        Query the archive
+
+        Args:
+            question: Question to ask
+            top_k: Number of chunks to retrieve
+            output_file: Optional file to save results
+        """
+        logger.info("="*70)
+        logger.info(f"QUERYING ARCHIVE: {question}")
+        logger.info("="*70)
+
+        try:
+            result = query_with_observability(
+                self.query_engine,
+                question,
+                output_file=output_file,
+                top_k=top_k
+            )
+
+            # Display results
+            print("\n" + "="*70)
+            print("ANSWER:")
+            print("="*70)
+            print(result.answer)
+
+            print("\n" + "="*70)
+            print(f"CITATIONS ({len(result.citations)}):")
+            print("="*70)
+            for i, citation in enumerate(result.citations, 1):
+                print(f"\n[{i}] {citation['source']} ({citation['type']})")
+                if citation['type'] == 'audio':
+                    print(f"    Timestamp: {citation['timestamp']}")
+                else:
+                    print(f"    Page: {citation['page']}")
+                print(f"    Relevance: {citation['relevance_score']:.4f}")
+                print(f"    Snippet: {citation['text_snippet'][:150]}...")
+
+            print("\n" + "="*70)
+            print("METADATA:")
+            print("="*70)
+            print(f"Query duration: {result.query_metadata['duration_seconds']:.2f}s")
+            print(f"Chunks retrieved: {result.query_metadata['chunks_retrieved']}")
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Query failed: {e}", exc_info=True)
+            return None
+
+
+def main(argv=None): # Added argv parameter
+    """Main entry point (for standalone script execution)"""
+    parser = argparse.ArgumentParser(
+        description='Berlin Media Archive RAG System'
+    )
+
+    parser.add_argument(
+        'mode',
+        choices=['ingest', 'query', 'both'],
+        help='Operation mode'
+    )
+
+    parser.add_argument(
+        '--audio',
+        type=str,
+        help='Path to audio file'
+    )
+
+    parser.add_argument(
+        '--pdf',
+        type=str,
+        help='Path to PDF file'
+    )
+
+    parser.add_argument(
+        '--question',
+        type=str,
+        help='Question to query (for query mode)'
+    )
+
+    parser.add_argument(
+        '--output',
+        type=str,
+        help='Output file for query results (JSON)'
+    )
+
+    parser.add_argument(
+        '--top-k',
+        type=int,
+        default=5,
+        help='Number of chunks to retrieve (default: 5)'
+    )
+
+    parser.add_argument(
+        '--index-name',
+        type=str,
+        default='assess',
+        help='Pinecone index name (default: assess)'
+    )
+
+    args = parser.parse_args(argv) # Pass argv to parse_args
+
+    # Load configuration
+    config = {
+        'pinecone_api_key': os.getenv('PINECONE_API_KEY', "pcsk_zRyjS_2FyS6uk3NsKW9AHPzDvvQPzANF2S3B67MS6UZ7ax6tnJfmCbLiYXrEcBJFHzcHg"),
+        'gemini_api_key': os.getenv('GEMINI_API_KEY', "AIzaSyB3N9BHeIWs_8sdFK76PU-v9N6prcIq2Hw"),
+        'index_name': args.index_name, # Use index_name from args
+        'dimension': int(os.getenv('PINECONE_DIMENSION', '1024')),
+        'embedding_model': os.getenv('EMBEDDING_MODEL', 'BAAI/bge-large-en-v1.5'), # Use 1024-dim model
+        'whisper_model': os.getenv('WHISPER_MODEL', 'base'),
+        'chunk_size': int(os.getenv('CHUNK_SIZE', '500'))
+    }
+
+    # Validate required config
+    if not config['pinecone_api_key']:
+        logger.error("PINECONE_API_KEY not found in environment!")
+        sys.exit(1)
+
+    if not config['gemini_api_key']:
+        logger.error("GEMINI_API_KEY not found in environment!")
+        sys.exit(1)
+
+    # Initialize pipeline
+    try:
+        pipeline = ArchivePipeline(config)
+        pipeline.initialize_services()
+    except Exception as e:
+        logger.error(f"Failed to initialize pipeline: {e}")
+        sys.exit(1)
+
+    # Execute based on mode
+    if args.mode in ['ingest', 'both']:
+        if not args.audio and not args.pdf:
+            logger.error("At least one of --audio or --pdf must be provided for ingestion!")
+            sys.exit(1)
+
+        success = pipeline.ingest_documents(
+            audio_path=args.audio,
+            pdf_path=args.pdf
+        )
+
+        if not success:
+            logger.error("Ingestion failed!")
+            sys.exit(1)
+
+    if args.mode in ['query', 'both']:
+        if not args.question:
+            logger.error("--question must be provided for query mode!")
+            sys.exit(1)
+
+        result = pipeline.query(
+            question=args.question,
+            top_k=args.top_k,
+            output_file=args.output
+        )
+
+        if not result:
+            logger.error("Query failed!")
+            sys.exit(1)
+
+
+if __name__ == "__main__":
+    # For interactive Colab execution, directly run the pipeline
+    # Configure paths and API keys
+    PINECONE_API_KEY = os.getenv('PINECONE_API_KEY', "pcsk_zRyjS_2FyS6uk3NsKW9AHPzDvvQPzANF2S3B67MS6UZ7ax6tnJfmCbLiYXrEcBJFHzcHg")
+    GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', "AIzaSyB3N9BHeIWs_8sdFK76PU-v9N6prcIq2Hw")
+    DRIVE_PATH = "/content/drive/MyDrive/assess"
+    AUDIO_FILE = os.path.join(DRIVE_PATH, "audio-sample-1.mp3") # Ensure this file exists
+    PDF_FILE = os.path.join(DRIVE_PATH, "thepublicdomain1.pdf") # Ensure this file exists
+
+    # Default configuration for Colab execution
+    config = {
+        'pinecone_api_key': PINECONE_API_KEY,
+        'gemini_api_key': GEMINI_API_KEY,
+        'index_name': 'assess',
+        'embedding_model': 'BAAI/bge-large-en-v1.5',
+        'whisper_model': 'base',
+        'chunk_size': 500
+    }
+
+    try:
+        pipeline = ArchivePipeline(config)
+        pipeline.initialize_services()
+
+        # Run ingestion
+        ingestion_success = pipeline.ingest_documents(audio_path=AUDIO_FILE, pdf_path=PDF_FILE)
+        if not ingestion_success:
+            logger.error("Colab ingestion failed. Check logs above.")
+        else:
+            # Run example queries
+            test_queries = [
+                "What is the primary definition of success discussed in the files?",
+                "What topics were discussed in the audio interview?",
+                "Summarize the main arguments from the text document."
+            ]
+
+            for i, query_text in enumerate(test_queries, 1):
+                print(f"\n{'='*60}")
+                print(f"Query {i}: {query_text}")
+                print('='*60)
+
+                pipeline.query(
+                    question=query_text,
+                    top_k=5,
+                    output_file=f"query_result_{i}.json"
+                )
+
+    except Exception as e:
+        logger.error(f"Colab pipeline execution failed: {e}", exc_info=True)
