@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: berlin-archive-api
+    env: python
+    region: frankfurt  # or your preferred region
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --workers 2 --timeout 120
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.9.16
+      - key: PORT
+        value: 10000
+      - key: FLASK_ENV
+        value: production
+      # Add your secret env vars in Render dashboard:
+      # - PINECONE_API_KEY
+      # - GEMINI_API_KEY
+      # - HUGGINGFACE_TOKEN (optional)
+    
+    healthCheckPath: /health
+    
+    autoDeploy: true
