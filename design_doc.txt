@@ -1,0 +1,416 @@
+# Berlin Media Archive - System Design & Scalability
+
+## 1. Scaling to 1,000 Hours of Audio and 10M+ Tokens
+
+### Current Architecture Limitations
+- **Synchronous Processing**: Current implementation processes files one at a time
+- **In-Memory Operations**: Transcription and embedding happen in memory
+- **Single-Node Compute**: All processing on one server instance
+
+### Scaled Architecture
+
+#### A. Batch Processing Pipeline
+
+**Architecture Components:**
+
+```
+┌─────────────────┐
+│  Upload Queue   │  (S3 + SQS/Pub-Sub)
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  Worker Pool    │  (Auto-scaling workers)
+│  - Audio Jobs   │  (8-16 parallel workers)
+│  - PDF Jobs     │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│ Processing Svc  │
+│ - Whisper API   │
+│ - Gemini API    │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  Vector Store   │  (Pinecone Pods)
+│  Sharded Index  │
+└─────────────────┘
+```
+
+**Implementation Strategy:**
+
+1. **Queue-Based Processing**
+   - Use AWS SQS or Google Cloud Pub/Sub for job queue
+   - Dead letter queue for failed jobs
+   - Job status tracking in Redis/DynamoDB
+
+2. **Parallel Worker Nodes**
+   - Deploy 8-16 worker nodes (Kubernetes/ECS)
+   - Each worker handles 4-6 concurrent jobs
+   - Auto-scaling based on queue depth
+
+3. **Chunk Size Optimization**
+   - Process audio in 10-minute chunks for parallelization
+   - Use streaming transcription where possible
+   - Batch embedding calls (100 chunks per API call)
+
+**Processing Time Estimates:**
+- 1,000 hours audio = 60,000 minutes
+- With 16 workers @ 3x real-time: ~8 hours total processing
+- With batched embeddings: ~2-3 hours for vectorization
+
+#### B. Vector Database Sharding
+
+**Pinecone Index Strategy:**
+
+1. **Namespace-Based Sharding**
+   ```
+   - audio_2020_q1
+   - audio_2020_q2
+   - audio_2021_q1
+   - pdf_history
+   - pdf_politics
+   ```
+
+2. **Time-Based Partitioning**
+   - Shard by year/quarter for audio
+   - Shard by topic/category for PDFs
+   - Query router selects relevant shards
+
+3. **Replica Sets**
+   - 2-3 replicas per shard for high availability
+   - Read replicas for query load distribution
+
+**Index Specifications:**
+- Dimension: 1024 (Gemini embeddings)
+- Metric: Cosine similarity
+- Pod Type: p2 (for production scale)
+- Total Vectors: ~500K (1000hrs audio) + ~100K (10M tokens PDF)
+
+#### C. Caching Layer
+
+**Multi-Level Caching:**
+
+1. **Query Cache (Redis)**
+   - Cache query embeddings (TTL: 1 hour)
+   - Cache frequent search results (TTL: 30 min)
+   - LRU eviction policy
+
+2. **Embedding Cache**
+   - Cache chunk embeddings during batch processing
+   - Reduces re-computation for similar content
+
+3. **CDN Layer**
+   - Cache static assets
+   - Cache API responses for common queries
+
+### D. Real-Time vs. Batch Processing Decision Matrix
+
+| Use Case | Approach | Reason |
+|----------|----------|--------|
+| Historical archive ingestion | Batch | Cost-effective, not time-sensitive |
+| User file upload | Real-time | Immediate feedback needed |
+| Re-indexing | Batch | Large-scale operation |
+| Query retrieval | Real-time | User-facing, latency critical |
+
+---
+
+## 2. Cost Analysis (Monthly Estimates)
+
+### A. Compute Costs
+
+**AWS Infrastructure:**
+- **ECS/Fargate Workers (16 instances)**
+  - Instance: 4 vCPU, 16GB RAM
+  - $0.12/hour × 16 × 730 hours = **$1,401/month**
+  - Note: Can use spot instances for 70% savings: **~$420/month**
+
+- **Flask API Servers (3 instances)**
+  - Instance: 2 vCPU, 8GB RAM
+  - $0.06/hour × 3 × 730 hours = **$131/month**
+
+**Total Compute: $551/month** (with spot instances)
+
+### B. Storage Costs
+
+**S3 Storage:**
+- 1,000 hours audio @ 1MB/min = 60GB
+- PDFs: ~5GB
+- Total: 65GB × $0.023/GB = **$1.50/month**
+
+**S3 Requests:**
+- Upload/download: ~10,000 requests/month = **$0.50/month**
+
+**Total Storage: $2/month**
+
+### C. Vector Database (Pinecone)
+
+**Pinecone Costs:**
+- Index: 600K vectors × 1024 dimensions
+- Pod Type: p2.x1 (for scale)
+- Estimated: 3 pods × $70/pod = **$210/month**
+- Storage: 600K vectors = **$50/month**
+
+**Total Pinecone: $260/month**
+
+### D. API Costs
+
+**Gemini API (Google):**
+- Embeddings: 600K chunks × $0.0001/1K tokens = **$60/month**
+- Generation: 10K queries × $0.002/1K tokens = **$20/month**
+
+**Whisper API (OpenAI):**
+- Transcription: 1,000 hours × $0.006/minute = **$360/month**
+- Note: Self-hosted Whisper can reduce to **$0** (included in compute)
+
+**Total API Costs: $80/month** (with self-hosted Whisper)
+
+### E. Total Monthly Cost Estimate
+
+| Component | Monthly Cost |
+|-----------|--------------|
+| Compute (Spot) | $551 |
+| Storage (S3) | $2 |
+| Vector DB (Pinecone) | $260 |
+| APIs (Gemini) | $80 |
+| **TOTAL** | **~$893/month** |
+
+**One-Time Ingestion Cost:**
+- Whisper API (if used): $360
+- Compute surge: $200
+- **Total: $560** (then drops to $893/month baseline)
+
+### Cost Optimization Strategies
+
+1. **Use Self-Hosted Whisper**: Save $360/month
+2. **Reserved Instances**: Save 30-40% on compute
+3. **Pinecone Serverless**: Pay per query instead of pod (if query volume is low)
+4. **Batch Processing Off-Peak**: Negotiate better rates
+5. **Smart Caching**: Reduce API calls by 40-60%
+
+**Optimized Monthly Cost: $500-$700/month**
+
+---
+
+## 3. Video Archive Expansion
+
+### Conceptual Architecture for Visual Search
+
+#### A. Video Processing Pipeline
+
+```
+Video Input (.mp4)
+      │
+      ├─→ Audio Track ──→ Whisper ──→ Text Embeddings
+      │
+      ├─→ Video Track ──→ Keyframe Extraction
+      │                   │
+      │                   ├─→ CLIP/ViT ──→ Visual Embeddings
+      │                   │
+      │                   └─→ OCR (Tesseract) ──→ Text from Frames
+      │
+      └─→ Metadata ──→ Structured Data
+```
+
+#### B. Keyframe Extraction Strategy
+
+**Method 1: Scene Change Detection**
+- Extract frames at scene boundaries
+- Use OpenCV or ffmpeg for detection
+- Typical: 1 frame per 2-5 seconds
+- For 1000 hours: ~720K keyframes
+
+**Method 2: Fixed Interval**
+- Extract every N seconds
+- More predictable volume
+- For 1000 hours @ 3s intervals: ~1.2M keyframes
+
+**Method 3: Intelligent Sampling**
+- Use motion detection
+- Extract frames with significant visual change
+- Reduces storage by 60-70%
+
+#### C. Multi-Modal Embedding Strategy
+
+**Approach 1: Separate Indices**
+```
+┌──────────────┐
+│ Audio Index  │  (Text embeddings)
+└──────────────┘
+┌──────────────┐
+│ Visual Index │  (CLIP embeddings)
+└──────────────┘
+┌──────────────┐
+│  OCR Index   │  (Text from frames)
+└──────────────┘
+```
+
+**Approach 2: Unified Multi-Modal Index**
+```
+Single Pinecone Index with:
+- Visual embeddings (512/768D from CLIP)
+- Text embeddings (1024D from Gemini)
+- Concatenated vector: [visual|text]
+- Total dimensions: 1536-1792D
+```
+
+**Recommended: Approach 1** (Better performance, easier debugging)
+
+#### D. Visual Search Implementation
+
+**Query Types Supported:**
+
+1. **Text-to-Visual Search**
+   - Query: "Show me the Berlin TV Tower construction"
+   - Process: Text → CLIP text encoder → Search visual index
+   - Implementation: `clip.encode_text(query)`
+
+2. **Visual-to-Visual Search**
+   - Upload reference image
+   - Process: Image → CLIP image encoder → Search visual index
+   - Implementation: `clip.encode_image(uploaded_img)`
+
+3. **Hybrid Text+Visual Search**
+   - Query: "Show videos where someone discusses architecture"
+   - Process: 
+     - Text search in audio transcripts
+     - Visual search for architecture concepts
+     - Rank fusion of results
+
+**Technology Stack:**
+
+```python
+# Keyframe Extraction
+import cv2
+from scenedetect import detect, ContentDetector
+
+# Visual Embeddings
+from transformers import CLIPProcessor, CLIPModel
+model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14")
+
+# OCR
+import pytesseract
+
+# Storage
+# Use separate Pinecone index: "video_visual"
+# Metadata: {frame_num, timestamp, video_id, ocr_text}
+```
+
+#### E. Updated Pipeline Code Structure
+
+```python
+class VideoIngestionPipeline:
+    def __init__(self):
+        self.clip_model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14")
+        self.audio_pipeline = AudioIngestionPipeline()
+    
+    def process_video(self, video_path):
+        # 1. Extract audio track
+        audio = self.extract_audio(video_path)
+        audio_results = self.audio_pipeline.process(audio)
+        
+        # 2. Extract keyframes
+        keyframes = self.extract_keyframes(video_path)
+        
+        # 3. Generate visual embeddings
+        visual_embeddings = self.encode_frames(keyframes)
+        
+        # 4. Perform OCR on frames
+        ocr_text = self.extract_text_from_frames(keyframes)
+        
+        # 5. Upsert to vector store
+        self.upsert_video_data(visual_embeddings, ocr_text, audio_results)
+```
+
+#### F. Query Expansion for Visual Search
+
+```python
+class VisualSearchEngine:
+    def query(self, text_query: str, visual_query: Image = None):
+        results = []
+        
+        # Text search in transcripts
+        if text_query:
+            text_results = self.text_retriever.search(text_query)
+            results.extend(text_results)
+        
+        # Visual search in keyframes
+        if visual_query:
+            visual_embedding = self.clip_model.encode_image(visual_query)
+            visual_results = self.visual_index.query(visual_embedding)
+            results.extend(visual_results)
+        
+        # De-duplicate and rank
+        return self.rank_results(results)
+```
+
+#### G. Storage & Bandwidth Considerations
+
+**Storage Requirements:**
+- Keyframes: 1M frames × 50KB avg = 50GB
+- Visual embeddings: 1M × 768D × 4 bytes = 3GB
+- Total additional: ~53GB
+
+**Bandwidth:**
+- Streaming video thumbnails: ~2MB per query result
+- CDN recommended for serving keyframes
+
+#### H. Cost Impact of Video Addition
+
+**Additional Monthly Costs:**
+- Compute (keyframe extraction): +$100
+- Pinecone (visual index): +$80
+- Storage (S3 keyframes): +$1.50
+- **Total Additional: ~$180/month**
+
+**New Total: $1,073/month** (with video)
+
+---
+
+## 4. Production Deployment Checklist
+
+### Infrastructure
+- [ ] Set up Kubernetes cluster or ECS service
+- [ ] Configure auto-scaling policies
+- [ ] Set up load balancer for API
+- [ ] Configure health checks
+- [ ] Set up monitoring (Prometheus, Grafana)
+
+### Database
+- [ ] Create Pinecone production index
+- [ ] Configure namespace strategy
+- [ ] Set up backup procedures
+- [ ] Configure access controls
+
+### Security
+- [ ] Implement API authentication (JWT)
+- [ ] Set up rate limiting
+- [ ] Configure CORS policies
+- [ ] Enable HTTPS/TLS
+- [ ] Implement input validation
+- [ ] Set up secrets management (AWS Secrets Manager)
+
+### Observability
+- [ ] Set up centralized logging (ELK/CloudWatch)
+- [ ] Configure alerting (PagerDuty/Opsgenie)
+- [ ] Set up APM (DataDog/New Relic)
+- [ ] Create dashboards for key metrics
+
+### CI/CD
+- [ ] Set up GitHub Actions workflow
+- [ ] Configure automated testing
+- [ ] Set up staging environment
+- [ ] Implement blue-green deployment
+
+---
+
+## 5. Future Enhancements
+
+1. **Semantic Chunking**: Use LLM to create topic-based chunks instead of fixed-size
+2. **Query Expansion**: Automatically expand user queries with synonyms
+3. **Conversational Memory**: Multi-turn conversations with context retention
+4. **Active Learning**: Learn from user feedback to improve results
+5. **Multi-Language Support**: Add German language processing
+6. **Custom Fine-Tuning**: Fine-tune embeddings on domain-specific content
