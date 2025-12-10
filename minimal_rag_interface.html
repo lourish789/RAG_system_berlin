@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Archive Query System</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: #ffffff;
+            color: #000000;
+            min-height: 100vh;
+            padding: 40px 20px;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 50px;
+            padding-bottom: 20px;
+            border-bottom: 2px solid #000000;
+        }
+
+        .header h1 {
+            font-size: 2em;
+            font-weight: 700;
+            letter-spacing: -0.5px;
+            margin-bottom: 8px;
+        }
+
+        .header p {
+            font-size: 0.95em;
+            color: #666666;
+        }
+
+        .status-bar {
+            background: #f5f5f5;
+            border: 1px solid #e0e0e0;
+            border-radius: 4px;
+            padding: 12px 16px;
+            margin-bottom: 30px;
+            font-size: 0.9em;
+            display: none;
+        }
+
+        .status-bar.show {
+            display: block;
+        }
+
+        .status-bar.connected {
+            background: #f0f9ff;
+            border-color: #000000;
+        }
+
+        .status-bar.error {
+            background: #fff5f5;
+            border-color: #000000;
+            color: #cc0000;
+        }
+
+        .query-section {
+            margin-bottom: 40px;
+        }
+
+        .input-group {
+            margin-bottom: 20px;
+        }
+
+        .input-group label {
+            display: block;
+            font-weight: 600;
+            margin-bottom: 10px;
+            font-size: 0.95em;
+        }
+
+        textarea {
+            width: 100%;
+            padding: 16px;
+            border: 2px solid #000000;
+            border-radius: 4px;
+            font-size: 1em;
+            font-family: inherit;
+            resize: vertical;
+            min-height: 120px;
+            transition: all 0.2s;
+            background: #ffffff;
+        }
+
+        textarea:focus {
+            outline: none;
+            border-color: #333333;
+            box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.1);
+        }
+
+        textarea::placeholder {
+            color: #999999;
+        }
+
+        button {
+            width: 100%;
+            padding: 16px;
+            font-size: 1em;
+            font-weight: 600;
+            border: 2px solid #000000;
+            background: #000000;
+            color: #ffffff;
+            cursor: pointer;
+            transition: all 0.2s;
+            border-radius: 4px;
+        }
+
+        button:hover:not(:disabled) {
+            background: #333333;
+            border-color: #333333;
+        }
+
+        button:active:not(:disabled) {
+            background: #000000;
+            transform: scale(0.98);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .results-section {
+            display: none;
+            animation: fadeIn 0.3s ease-in;
+        }
+
+        .results-section.show {
+            display: block;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .result-header {
+            margin-bottom: 30px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #000000;
+        }
+
+        .result-header h2 {
+            font-size: 1.5em;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .result-meta {
+            font-size: 0.9em;
+            color: #666666;
+        }
+
+        .answer-box {
+            background: #fafafa;
+            border: 2px solid #000000;
+            border-radius: 4px;
+            padding: 24px;
+            margin-bottom: 40px;
+        }
+
+        .answer-box h3 {
+            font-size: 1.1em;
+            font-weight: 600;
+            margin-bottom: 16px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .answer-text {
+            font-size: 1.05em;
+            line-height: 1.8;
+            white-space: pre-wrap;
+        }
+
+        .citations-section {
+            margin-top: 40px;
+        }
+
+        .citations-section h3 {
+            font-size: 1.1em;
+            font-weight: 600;
+            margin-bottom: 20px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .citation-item {
+            background: #ffffff;
+            border: 1px solid #e0e0e0;
+            border-left: 4px solid #000000;
+            padding: 16px;
+            margin-bottom: 16px;
+            transition: all 0.2s;
+        }
+
+        .citation-item:hover {
+            border-left-width: 6px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        .citation-header {
+            font-weight: 600;
+            margin-bottom: 8px;
+            font-size: 0.95em;
+        }
+
+        .citation-meta {
+            font-size: 0.85em;
+            color: #666666;
+            margin-bottom: 12px;
+        }
+
+        .citation-meta span {
+            margin-right: 16px;
+        }
+
+        .citation-snippet {
+            font-size: 0.9em;
+            color: #333333;
+            font-style: italic;
+            line-height: 1.6;
+            padding-left: 12px;
+            border-left: 2px solid #e0e0e0;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 60px 20px;
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid #e0e0e0;
+            border-top: 3px solid #000000;
+            border-radius: 50%;
+            margin: 0 auto 20px;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .loading-text {
+            font-size: 0.95em;
+            color: #666666;
+        }
+
+        .error-box {
+            background: #fff5f5;
+            border: 2px solid #cc0000;
+            border-radius: 4px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .error-box h4 {
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: #cc0000;
+        }
+
+        .error-box p {
+            font-size: 0.9em;
+            color: #333333;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 16px;
+            margin-bottom: 40px;
+        }
+
+        .stat-item {
+            background: #fafafa;
+            border: 1px solid #e0e0e0;
+            padding: 16px;
+            text-align: center;
+            border-radius: 4px;
+        }
+
+        .stat-label {
+            font-size: 0.8em;
+            color: #666666;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 6px;
+        }
+
+        .stat-value {
+            font-size: 1.5em;
+            font-weight: 700;
+        }
+
+        @media (max-width: 768px) {
+            body {
+                padding: 20px 16px;
+            }
+
+            .header h1 {
+                font-size: 1.5em;
+            }
+
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Archive Query System</h1>
+            <p>Search historical documents and audio transcripts</p>
+        </div>
+
+        <div class="status-bar" id="statusBar">
+            Connecting to server...
+        </div>
+
+        <div class="query-section">
+            <div class="input-group">
+                <label for="question">Your Question</label>
+                <textarea 
+                    id="question" 
+                    placeholder="Enter your research question here..."
+                    autofocus
+                ></textarea>
+            </div>
+
+            <button id="queryBtn" onclick="submitQuery()">
+                Search Archive
+            </button>
+        </div>
+
+        <div class="results-section" id="resultsSection">
+            <!-- Results appear here -->
+        </div>
+    </div>
+
+    <script>
+        // IMPORTANT: Replace with your actual Render backend URL
+        const API_BASE_URL = "https://rag-system-berlin.onrender.com";
+
+        // Status bar element
+        const statusBar = document.getElementById('statusBar');
+
+        // Check backend connection on load
+        async function checkBackendHealth() {
+            statusBar.classList.add('show');
+            statusBar.textContent = 'Checking server connection...';
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/`, {
+                    method: 'GET',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+
+                const data = await response.json();
+
+                if (data.status === 'healthy') {
+                    statusBar.textContent = '✓ Connected to server';
+                    statusBar.classList.add('connected');
+                    statusBar.classList.remove('error');
+                    
+                    // Hide status bar after 3 seconds
+                    setTimeout(() => {
+                        statusBar.classList.remove('show');
+                    }, 3000);
+                } else if (data.status === 'initializing') {
+                    statusBar.textContent = 'Server is initializing... Please wait.';
+                    statusBar.classList.remove('connected', 'error');
+                    
+                    // Retry after 5 seconds
+                    setTimeout(checkBackendHealth, 5000);
+                } else {
+                    throw new Error('Server not ready');
+                }
+            } catch (error) {
+                console.error('Backend connection error:', error);
+                statusBar.textContent = '✗ Cannot connect to server. Please check backend URL.';
+                statusBar.classList.add('error');
+                statusBar.classList.remove('connected');
+            }
+        }
+
+        async function submitQuery() {
+            const question = document.getElementById('question').value.trim();
+            
+            if (!question) {
+                alert('Please enter a question');
+                return;
+            }
+
+            const queryBtn = document.getElementById('queryBtn');
+            const resultsSection = document.getElementById('resultsSection');
+            
+            // Show loading state
+            queryBtn.disabled = true;
+            queryBtn.textContent = 'Searching...';
+            resultsSection.classList.add('show');
+            resultsSection.innerHTML = `
+                <div class="loading">
+                    <div class="spinner"></div>
+                    <div class="loading-text">Searching the archive...</div>
+                </div>
+            `;
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/query`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        question: question,
+                        top_k: 5,
+                        include_raw_chunks: false
+                    })
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({}));
+                    throw new Error(errorData.error || `Server error: ${response.status}`);
+                }
+
+                const data = await response.json();
+                displayResults(data);
+
+            } catch (error) {
+                console.error('Query error:', error);
+                resultsSection.innerHTML = `
+                    <div class="error-box">
+                        <h4>Query Failed</h4>
+                        <p>${escapeHtml(error.message)}</p>
+                        <p style="margin-top: 12px; font-size: 0.85em;">
+                            Please ensure your backend is running at:<br>
+                            <strong>${API_BASE_URL}</strong>
+                        </p>
+                    </div>
+                `;
+            } finally {
+                queryBtn.disabled = false;
+                queryBtn.textContent = 'Search Archive';
+            }
+        }
+
+        function displayResults(data) {
+            const resultsSection = document.getElementById('resultsSection');
+            const metadata = data.query_metadata || {};
+            const citations = data.citations || [];
+            const answer = data.answer || 'No answer generated';
+
+            let html = `
+                <div class="result-header">
+                    <h2>Results</h2>
+                    <div class="result-meta">
+                        Query completed in ${metadata.duration_seconds?.toFixed(2) || '0.00'}s
+                    </div>
+                </div>
+
+                <div class="stats-grid">
+                    <div class="stat-item">
+                        <div class="stat-label">Sources</div>
+                        <div class="stat-value">${citations.length}</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">Chunks</div>
+                        <div class="stat-value">${metadata.chunks_retrieved || 0}</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">Time</div>
+                        <div class="stat-value">${metadata.duration_seconds?.toFixed(1) || '0.0'}s</div>
+                    </div>
+                </div>
+
+                <div class="answer-box">
+                    <h3>Answer</h3>
+                    <div class="answer-text">${escapeHtml(answer)}</div>
+                </div>
+            `;
+
+            if (citations.length > 0) {
+                html += `
+                    <div class="citations-section">
+                        <h3>Sources (${citations.length})</h3>
+                `;
+
+                citations.forEach((citation, index) => {
+                    const isAudio = citation.type === 'audio';
+                    const location = isAudio 
+                        ? citation.timestamp || 'N/A'
+                        : `Page ${citation.page || 'N/A'}`;
+
+                    html += `
+                        <div class="citation-item">
+                            <div class="citation-header">
+                                ${index + 1}. ${escapeHtml(citation.source)}
+                            </div>
+                            <div class="citation-meta">
+                                <span><strong>Type:</strong> ${citation.type?.toUpperCase() || 'UNKNOWN'}</span>
+                                <span><strong>Location:</strong> ${escapeHtml(location)}</span>
+                                <span><strong>Score:</strong> ${citation.relevance_score?.toFixed(3) || 'N/A'}</span>
+                            </div>
+                            <div class="citation-snippet">
+                                "${escapeHtml(citation.text_snippet || 'No excerpt available')}"
+                            </div>
+                        </div>
+                    `;
+                });
+
+                html += `</div>`;
+            }
+
+            resultsSection.innerHTML = html;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Enable Enter key to submit (Shift+Enter for new line)
+        document.getElementById('question').addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                submitQuery();
+            }
+        });
+
+        // Check backend health on page load
+        window.addEventListener('load', checkBackendHealth);
+    </script>
+</body>
+</html>
