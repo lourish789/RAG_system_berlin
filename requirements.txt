@@ -28,3 +28,4 @@ certifi
 # For production
 gunicorn
 Werkzeug
+CORS
