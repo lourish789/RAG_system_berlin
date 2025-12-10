@@ -9,6 +9,7 @@ google-generativeai
 
 # Embeddings - use specific versions that have wheels
 sentence-transformers
+langchain-google-genai
 torch
 transformers
 
